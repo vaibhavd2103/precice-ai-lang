@@ -15,6 +15,16 @@ to:
 - answer preCICE-related questions,
 - help users create or edit project files safely.
 
+The intended end-user workflow is:
+
+1. clone the repository,
+2. install dependencies,
+3. configure environment variables through `.env` or CLI flags,
+4. start the local server,
+5. open the chat UI,
+6. choose a working directory for each chat session,
+7. let all file reads, writes, and tool calls stay scoped to that directory.
+
 ## Current Repository State
 
 This repository already contains a working first version of a local preCICE assistant.
@@ -64,6 +74,11 @@ Users should be able to provide:
 
 and then use the agent with minimal setup.
 
+Startup configuration and session sandboxing must be treated as separate concerns:
+
+- startup config defines the LLM provider, API key, model, and optional base URL,
+- session config defines the working directory for that specific chat.
+
 ## Primary Objective
 
 Build a provider-flexible preCICE assistant that can:
@@ -91,10 +106,10 @@ Target behavior:
 
 Minimum expected configuration shape:
 
-- `LLM_PROVIDER`
-- `LLM_API_KEY`
-- `LLM_MODEL`
-- `LLM_BASE_URL` when needed
+- `PRECICE_AI_PROVIDER` or `LLM_PROVIDER`
+- `PRECICE_AI_API_KEY` or `LLM_API_KEY`
+- `PRECICE_AI_MODEL` or `LLM_MODEL`
+- `PRECICE_AI_BASE_URL` or `LLM_BASE_URL` when needed
 
 OpenRouter should remain a first-class default, but the code should be organized so
 additional providers are easy to add.
@@ -106,11 +121,13 @@ The agent must be able to:
 - list project files,
 - read project files,
 - write project files,
-- stay confined to the selected working directory.
+- stay confined to the selected working directory for the current session.
 
 Non-negotiable rule:
 
 - no file access outside the chosen project root.
+- the server must reject chat turns that require local file access before a session
+  working directory is selected.
 
 ### 3. preCICE knowledge and project understanding
 
@@ -147,6 +164,12 @@ The system should remain lightweight:
 The current local-first architecture is a strength and should be preserved unless a
 clear need appears.
 
+The server should be runnable directly from a cloned repo with:
+
+- `pip install -e .`
+- `.env` configuration or startup CLI flags
+- no extra database or service dependencies
+
 ## Non-Goals
 
 Unless explicitly requested, do not redesign this project into:
@@ -171,6 +194,11 @@ Prefer a structure like:
 - `config.py`: provider/model/base-url/api-key settings
 - `llm.py` or equivalent: build the configured chat model
 - `graph.py`: consume the prepared model and bind tools
+
+The CLI should support both:
+
+- `.env`-driven startup,
+- command-line overrides for provider, API key, model, and base URL.
 
 ### Tooling
 
@@ -200,8 +228,8 @@ The system prompt should consistently instruct the agent to:
 The intended solution is successful when:
 
 1. a user can start the app locally,
-2. provide an API key and model/provider config,
-3. select a project folder,
+2. provide an API key and model/provider config through `.env` or CLI flags,
+3. select a project folder per chat session,
 4. ask questions about preCICE or their local project,
 5. get grounded answers based on docs, forum, and file contents,
 6. request file creation or modification safely inside the project folder.

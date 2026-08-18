@@ -23,6 +23,15 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "python-multipart>=0.0.9",
     "pydantic>=2.0.0",
+    "python-dotenv>=1.0.1",
+    "langchain-mcp-adapters",
+    "mcp",
+    "fastmcp>=3.0",
+    # Runtime dependencies of the sibling preCICE MCP server.
+    "httpx>=0.24",
+    "lxml>=4.9",
+    "numpy>=1.24",
+    "openai>=1.0",
 ]
 
 [project.scripts]

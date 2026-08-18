@@ -33,10 +33,16 @@ def append_human(sid: str, text: str) -> None:
 
 def append_ai(sid: str, text: str) -> None:
     SESSIONS[sid]["messages"].append(AIMessage(content=text))
+    if len(SESSIONS[sid]["messages"]) > config.MAX_SESSION_MESSAGES:
+        SESSIONS[sid]["messages"] = SESSIONS[sid]["messages"][-config.MAX_SESSION_MESSAGES:]
 
 
 def set_working_dir(sid: str, path: str) -> None:
     SESSIONS[sid]["working_dir"] = path
+
+
+def has_working_dir(sid: str) -> bool:
+    return bool(SESSIONS.get(sid, {}).get("working_dir", "").strip())
 
 
 def store_attachment(sid: str, filename: str, content: str) -> None:

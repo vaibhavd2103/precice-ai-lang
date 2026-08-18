@@ -5,6 +5,15 @@ library, built with **LangGraph**. It runs entirely on your machine, opens a bro
 UI, and lets an LLM agent read/write files in your simulation project, search preCICE
 docs + forum, and validate `precice-config.xml`.
 
+The intended user flow is:
+
+1. clone this repo,
+2. install the Python dependencies,
+3. configure the LLM through `.env` or CLI flags,
+4. start the local server,
+5. choose a working directory for each chat session in the UI,
+6. let the agent read, write, and validate files only inside that selected directory.
+
 This document explains **how the agent is built**, **how each tool works**, and how the
 tool set mirrors what you'd expose from an MCP server — so you can use this repo as a
 template for wiring the same tools into either a LangGraph agent or an MCP server.
@@ -40,8 +49,8 @@ functions with `mcp.server.fastmcp.FastMCP` — the function bodies don't change
  browser  ── SSE ──▶    │        server.py         │  FastAPI, /api/chat streams
                         └────────────┬─────────────┘
                                      │
-                          session state (conversation.py)
-                          in-memory only, no DB
+                       startup config + session state
+                startup LLM config from env/CLI, per-session workdir
                                      │
                                      ▼
                         ┌─────────────────────────┐
@@ -90,10 +99,10 @@ same running transcript the `agent` node sees next.
 
 ### 3b. Nodes
 
-- **`agent`** (`call_llm`) — builds a `SystemMessage` describing the assistant's role and
-  the current `working_dir`, prepends it to the last N messages, and calls
-  `llm_with_tools.invoke(messages)`. The LLM either returns plain text (done) or an
-  `AIMessage` with `tool_calls` attached.
+- **`agent`** (`call_llm`) — builds a `SystemMessage` describing the assistant's role,
+  the current `working_dir`, and the local sandbox rules, prepends it to the last N
+  messages, and calls `llm_with_tools.invoke(messages)`. The LLM either returns plain
+  text (done) or an `AIMessage` with `tool_calls` attached.
 - **`tools`** — a prebuilt LangGraph `ToolNode(ALL_TOOLS)`. It reads `tool_calls` off the
   last message, matches them by name against `ALL_TOOLS`, executes each, and returns
   `ToolMessage`s.
@@ -157,7 +166,8 @@ if not resolved.is_relative_to(base):
 
 This is checked in `list_project_files`, `read_project_file`, `write_project_file`, and
 `validate_precice_config`. `working_dir` itself can only be set through the explicit
-`POST /api/session/{sid}/workdir` endpoint — the LLM cannot change it mid-conversation.
+`POST /api/session/{sid}/workdir` endpoint — the LLM cannot change it mid-conversation,
+and the server rejects chat requests until a working directory is chosen for that session.
 
 **Every tool returns a string, never raises.** Bodies are wrapped in `try/except` and
 return `f"Error: {e}"` on failure — the agent loop has no exception-handling path, so a
@@ -167,13 +177,16 @@ raised exception would kill the whole `/api/chat` stream.
 
 ## 5. Request lifecycle
 
-1. Browser calls `POST /api/session` → gets a `session_id`; `SESSIONS[sid]` created
+1. User clones the repo, installs dependencies, and starts the server with `.env` values
+   or CLI flags such as `--provider`, `--api-key`, `--model`, and `--base-url`.
+2. Browser calls `POST /api/session` → gets a `session_id`; `SESSIONS[sid]` created
    in-memory (`conversation.py`), no disk, no DB.
-2. User sets a working directory → `POST /api/session/{sid}/workdir`.
-3. User sends a message → `POST /api/chat {message, session_id}`.
-4. `server.py` appends the `HumanMessage`, calls `stream_agent(rag_app, session["messages"], session["working_dir"], session_id)`.
-5. LangGraph runs `agent → [tools → agent]* → END`, streaming SSE events the whole time.
-6. Final assistant text is appended back into `SESSIONS[sid]["messages"]`, capped to
+3. User sets a working directory for that chat session → `POST /api/session/{sid}/workdir`.
+4. User sends a message → `POST /api/chat {message, session_id}`.
+5. `server.py` appends the `HumanMessage`, calls
+   `stream_agent(rag_app, session["messages"], session["working_dir"], session_id)`.
+6. LangGraph runs `agent → [tools → agent]* → END`, streaming SSE events the whole time.
+7. Final assistant text is appended back into `SESSIONS[sid]["messages"]`, capped to
    `MAX_SESSION_MESSAGES` (20) so context doesn't grow unbounded.
 
 Nothing is ever written to a database. Restarting the process wipes all sessions and
@@ -239,36 +252,62 @@ MCP clients will show the LLM on the other end — no need to write them twice.
 ## 8. Running it
 
 ```bash
+git clone <your-fork-or-copy>
+cd precice-ai
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
-cp .env.example .env   # fill in OPENROUTER_API_KEY
-export OPENROUTER_API_KEY=sk-or-...
+cp .env.example .env
 precice-ai
 ```
 
-Opens `http://127.0.0.1:7860`. Useful endpoints while developing:
+Or start it without editing `.env`:
+
+```bash
+precice-ai \
+  --provider openrouter \
+  --api-key sk-or-... \
+  --model openai/gpt-4o-mini \
+  --base-url https://openrouter.ai/api/v1
+```
+
+After startup, open `http://127.0.0.1:7860`, create a chat session, choose the working
+directory for that chat, and then interact with the agent. Useful endpoints while developing:
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /api/config` | current startup LLM/runtime config exposed to the UI |
 | `GET /api/status` | ingestion state: `starting` → `ingesting` → `ready`/`error` |
 | `POST /api/reingest` | force a re-ingestion without waiting an hour |
 | `POST /api/session` | new session |
-| `POST /api/session/{sid}/workdir` | point the agent at a project folder |
+| `POST /api/session/{sid}/workdir` | point that chat session at a project folder |
 | `POST /api/upload/{sid}` | attach a file (text only) to the session |
 | `POST /api/chat` | SSE-streamed chat turn |
+
+### Activity logging
+
+Agent and tool activity is written as JSONL to `logs/agent.jsonl` by default. Each chat
+input/output and each tool call/response is recorded; MCP events include
+`"source": "mcp"` and the MCP tool name. Set `PRECICE_AI_LOG_FILE` to choose another
+path. The same events are printed to the server terminal in real time. Logging failures
+never interrupt a chat stream.
+
+The preCICE MCP server is loaded from the sibling `precice-ai` checkout. Its `fastmcp`
+dependency is included in this project; after installing dependencies, restart the app
+and check `GET /api/status` for `tools.mcp_connected` and the MCP tool names.
 
 ## 9. File map
 
 ```
 precice_ai/
-  config.py        env-driven settings (model, host/port, chunk limits)
+  config.py        env-driven startup settings and public runtime config
+  llm.py           provider-aware ChatOpenAI factory
   vectorstore.py   ChromaDB singleton + HuggingFace embeddings
   ingest.py        scrape → chunk → upsert, hourly via APScheduler
   tools.py         the 7 @tool functions + ALL_TOOLS
   graph.py         AgentState, call_llm node, StateGraph wiring, stream_agent
-  conversation.py  in-memory SESSIONS / ATTACHMENT_STORE dicts
+  conversation.py  in-memory sessions, attachments, per-session working_dir
   server.py        FastAPI app, SSE /api/chat, lifespan (ingestion + scheduler)
-  cli.py           `precice-ai` entry point, opens browser
+  cli.py           `precice-ai` entry point, loads `.env`, opens browser
 static/
   index.html       chat UI: SSE consumer, tool-call cards, source pills
 ```

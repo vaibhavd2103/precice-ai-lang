@@ -53,7 +53,7 @@ or any other database or frontend framework. The entire thing must work with
 ## 3. LLM configuration
 
 **Provider**: OpenRouter — `https://openrouter.ai/api/v1`
-**Default model**: `mistralai/mistral-7b-instruct:free`
+**Default model**: `openai/gpt-4o-mini`
 **Auth**: `OPENROUTER_API_KEY` environment variable (required)
 
 LangChain setup:
@@ -62,7 +62,7 @@ LangChain setup:
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    model=os.environ.get("PRECICE_AI_MODEL", "mistralai/mistral-7b-instruct:free"),
+    model=os.environ.get("PRECICE_AI_MODEL", "openai/gpt-4o-mini"),
     openai_api_key=os.environ["OPENROUTER_API_KEY"],
     openai_api_base="https://openrouter.ai/api/v1",
     streaming=True,
@@ -83,7 +83,7 @@ llm_with_tools = llm.bind_tools(tools)
 
 Free models that support tool calling on OpenRouter (test in this order):
 
-- `mistralai/mistral-7b-instruct:free`
+- `openai/gpt-4o-mini`
 - `meta-llama/llama-3.1-8b-instruct:free`
 - `google/gemma-3-12b-it:free`
 
@@ -121,7 +121,7 @@ import os
 from pathlib import Path
 
 OPENROUTER_API_KEY: str = os.environ.get("OPENROUTER_API_KEY", "")
-MODEL: str = os.environ.get("PRECICE_AI_MODEL", "mistralai/mistral-7b-instruct:free")
+MODEL: str = os.environ.get("PRECICE_AI_MODEL", "openai/gpt-4o-mini")
 HOST: str = os.environ.get("PRECICE_AI_HOST", "127.0.0.1")
 PORT: int = int(os.environ.get("PRECICE_AI_PORT", "7860"))
 EMBED_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
@@ -921,7 +921,7 @@ At each step, run a quick smoke test before proceeding.
 OPENROUTER_API_KEY=sk-or-your-key-here
 
 # Optional: change the model (must support tool calling)
-# PRECICE_AI_MODEL=mistralai/mistral-7b-instruct:free
+# PRECICE_AI_MODEL=openai/gpt-4o-mini
 # PRECICE_AI_MODEL=meta-llama/llama-3.1-8b-instruct:free
 # PRECICE_AI_MODEL=google/gemma-3-12b-it:free
 
