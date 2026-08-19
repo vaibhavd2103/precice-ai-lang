@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Annotated, AsyncIterator, List
 import operator
@@ -10,7 +11,7 @@ from typing_extensions import TypedDict
 from precice_ai import config
 from precice_ai.llm import build_chat_model
 from precice_ai.logger import log_event
-from precice_ai.tools import get_all_tools, get_tool_status
+from precice_ai.tools import get_all_tools, get_mcp_tool, get_tool_status
 
 
 class AgentState(TypedDict):
@@ -22,6 +23,72 @@ class AgentState(TypedDict):
 _llm = None
 _llm_with_tools = None
 _llm_signature = None
+
+
+def _is_precice_question(text: str) -> bool:
+    lowered = text.lower()
+    terms = (
+        "precice", "pre-cice", "coupling", "participant", "mapping", "adapter",
+        "precice-config", "serial-implicit", "fluid-structure", "mesh exchange",
+    )
+    return any(term in lowered for term in terms)
+
+
+def _mcp_call(tool: object, name: str, payload: dict, session_id: str) -> str:
+    """Invoke an MCP tool for deterministic prefetching and log it."""
+    log_event("tool_call", session_id=session_id, source="mcp", tool=name, input=payload)
+    try:
+        result = tool.invoke(payload)
+        output = getattr(result, "content", result)
+        output = str(output)
+    except Exception as exc:
+        output = f"MCP tool error: {exc}"
+    log_event("tool_response", session_id=session_id, source="mcp", tool=name, output=output)
+    return output
+
+
+def _prefetch_precice_context(question: str, session_id: str) -> str | None:
+    """Fetch MCP KB context before the LLM gets a preCICE question."""
+    if not _is_precice_question(question) or not get_tool_status()["mcp_connected"]:
+        return None
+
+    status_tool = get_mcp_tool("kb_precice_status")
+    if status_tool is None:
+        return None
+
+    status_text = _mcp_call(status_tool, "kb_precice_status", {}, session_id)
+    try:
+        status = json.loads(status_text)
+        vector = status.get("vector", {})
+        vector_ready = vector.get("status") == "ok"
+        categories = vector.get("categories", {})
+        vector_ready = vector_ready and any(
+            details.get("status") == "ok" for details in categories.values()
+            if isinstance(details, dict)
+        )
+        if vector_ready:
+            vector_ready = all(
+                details.get("is_fresh", True)
+                for details in categories.values()
+                if isinstance(details, dict) and details.get("status") == "ok"
+            )
+    except (TypeError, json.JSONDecodeError):
+        vector_ready = False
+
+    if not vector_ready:
+        ingest_tool = get_mcp_tool("kb_ingest_precice_data")
+        if ingest_tool is not None:
+            _mcp_call(ingest_tool, "kb_ingest_precice_data", {}, session_id)
+
+    query_tool = get_mcp_tool("kb_query_precice")
+    if query_tool is None:
+        query_tool = get_mcp_tool("kb_query_precice_live")
+    if query_tool is None:
+        return "The preCICE MCP server is connected, but no query tool is available."
+
+    query_name = query_tool.name
+    result = _mcp_call(query_tool, query_name, {"question": question, "top_k": 5}, session_id)
+    return f"PreCICE MCP knowledge retrieved with {query_name}:\n{result}"
 
 
 def _get_llm_with_tools():
@@ -42,6 +109,14 @@ def call_llm(state: AgentState) -> dict:
         working_dir=state["working_dir"],
         message_count=len(state["messages"]),
         input=state["messages"][-1].content if state["messages"] else "",
+    )
+    prefetched_context = _prefetch_precice_context(
+        state["messages"][-1].content if state["messages"] else "",
+        state["session_id"],
+    )
+    context_message = (
+        f"\n\nDeterministic MCP context for this question:\n{prefetched_context}"
+        if prefetched_context else ""
     )
     system = SystemMessage(content=f"""You are preCICE AI, an expert assistant for the \
 preCICE multiphysics coupling library. You help with configuration, coupling schemes, \
@@ -66,7 +141,7 @@ If no working directory is set and the task needs local files, ask the user to s
 When writing or modifying files, confirm with the user what you are about to do first.
 MCP connection at startup: {tool_status['mcp_connected']}. MCP startup error: {tool_status['mcp_error'] or 'none'}.
 If MCP is unavailable, say so clearly and do not claim that you searched the preCICE KB.
-""")
+""" + context_message)
     messages = [system] + state["messages"][-config.MAX_SESSION_MESSAGES:]
     llm = _get_llm_with_tools()
     log_event(

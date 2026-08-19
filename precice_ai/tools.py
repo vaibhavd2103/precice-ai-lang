@@ -363,6 +363,11 @@ def get_all_tools() -> list[Any]:
     return [*local_tools, *_mcp_tools]
 
 
+def get_mcp_tool(name: str) -> Any | None:
+    """Return a loaded MCP tool by name, if the MCP server is connected."""
+    return next((tool_ for tool_ in _mcp_tools if tool_.name == name), None)
+
+
 def get_available_tool_names() -> list[str]:
     return [tool_.name for tool_ in get_all_tools()]
 
