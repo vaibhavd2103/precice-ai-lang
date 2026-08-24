@@ -128,8 +128,8 @@ in one event stream:
 | LangGraph event        | Emitted as SSE                          |
 | ----------------------- | ---------------------------------------- |
 | `on_chat_model_stream`  | `{"type": "token", "content": ...}`      |
-| `on_tool_start`         | `{"type": "tool_start", "tool", "input"}`|
-| `on_tool_end`           | `{"type": "tool_end", "tool", "output"}` |
+| `on_tool_start`         | `{"type": "tool_start", "tool", "call_id", "input"}`|
+| `on_tool_end`           | `{"type": "tool_end", "tool", "call_id", "output"}` |
 | *(derived)*             | `{"type": "sources", "content": [...]}` — parsed from `search_precice_docs` output |
 | *(end of stream)*       | `{"type": "done"}`                       |
 

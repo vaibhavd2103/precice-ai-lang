@@ -332,8 +332,8 @@
       white-space: pre-wrap;
       word-break: break-all;
       border-top: 1px solid var(--border);
-      max-height: 200px;
-      overflow-y: auto;
+      max-height: none;
+      overflow-x: auto;
     }
     .tool-card.open .tool-body { display: block; }
 
@@ -861,10 +861,10 @@
         scrollBottom();
         break;
       case 'tool_start':
-        appendToolCard(aiEl, event.tool, event.input);
+        appendToolCard(aiEl, event.tool, event.call_id, event.input);
         break;
       case 'tool_end':
-        updateToolCard(aiEl, event.tool, event.output);
+        updateToolCard(aiEl, event.tool, event.call_id, event.output);
         break;
       case 'sources':
         appendSources(aiEl, event.content);
@@ -941,11 +941,12 @@
     return escHtml(text).replace(/\n/g, '<br>');
   }
 
-  function appendToolCard(msgEl, toolName, input) {
+  function appendToolCard(msgEl, toolName, callId, input) {
     const bubble = msgEl.querySelector('.msg-bubble');
     const card = document.createElement('div');
     card.className = 'tool-card';
     card.dataset.tool = toolName;
+    card.dataset.callId = callId || '';
     const inputStr = typeof input === 'object' ? JSON.stringify(input, null, 2) : String(input);
     card.innerHTML = `
       <div class="tool-header" onclick="toggleCard(this.parentElement)">
@@ -959,13 +960,13 @@
     scrollBottom();
   }
 
-  function updateToolCard(msgEl, toolName, output) {
-    const cards = msgEl.querySelectorAll(`.tool-card[data-tool="${toolName}"]`);
-    // Update the last one that is still showing "running"
-    let target = null;
-    for (const c of cards) {
-      if (c.querySelector('.tool-status').textContent === 'running…') { target = c; break; }
-    }
+  function updateToolCard(msgEl, toolName, callId, output) {
+    const cards = Array.from(msgEl.querySelectorAll('.tool-card'))
+      .filter(card => card.dataset.tool === toolName);
+    // Match by the unique LangGraph run ID. Keep the running-card fallback for
+    // older servers that do not include call_id in their SSE events.
+    let target = callId ? cards.find(card => card.dataset.callId === callId) : null;
+    if (!target) target = cards.find(card => card.querySelector('.tool-status').textContent === 'running…');
     if (!target && cards.length) target = cards[cards.length - 1];
     if (!target) return;
     const status = target.querySelector('.tool-status');

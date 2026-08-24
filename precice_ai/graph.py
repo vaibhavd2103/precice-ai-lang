@@ -25,8 +25,23 @@ _llm_with_tools = None
 _llm_signature = None
 
 
-def _is_precice_question(text: str) -> bool:
-    lowered = text.lower()
+def _content_to_text(content: object) -> str:
+    """Normalize LangChain string or structured content blocks to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        return "\n".join(parts)
+    return str(content)
+
+
+def _is_precice_question(text: object) -> bool:
+    lowered = _content_to_text(text).lower()
     terms = (
         "precice", "pre-cice", "coupling", "participant", "mapping", "adapter",
         "precice-config", "serial-implicit", "fluid-structure", "mesh exchange",
@@ -111,7 +126,7 @@ def call_llm(state: AgentState) -> dict:
         input=state["messages"][-1].content if state["messages"] else "",
     )
     prefetched_context = _prefetch_precice_context(
-        state["messages"][-1].content if state["messages"] else "",
+        _content_to_text(state["messages"][-1].content) if state["messages"] else "",
         state["session_id"],
     )
     context_message = (
@@ -188,8 +203,8 @@ async def stream_agent(
     """
     Yields dicts:
       {"type": "token",      "content": str}
-      {"type": "tool_start", "tool": str, "input": dict}
-      {"type": "tool_end",   "tool": str, "output": str}
+      {"type": "tool_start", "tool": str, "call_id": str, "input": dict}
+      {"type": "tool_end",   "tool": str, "call_id": str, "output": str}
       {"type": "sources",    "content": list[dict]}
       {"type": "done"}
     """
@@ -210,6 +225,7 @@ async def stream_agent(
 
         elif kind == "on_tool_start":
             tool_name = event["name"]
+            call_id = str(event.get("run_id") or event.get("data", {}).get("tool_call_id") or "")
             mcp_tool_names = set(get_tool_status()["mcp_tools"])
             log_event(
                 "tool_call",
@@ -221,12 +237,14 @@ async def stream_agent(
             yield {
                 "type": "tool_start",
                 "tool": tool_name,
+                "call_id": call_id,
                 "input": event["data"].get("input", {}),
             }
 
         elif kind == "on_tool_end":
             output = event["data"].get("output", "")
             tool_name = event["name"]
+            call_id = str(event.get("run_id") or event.get("data", {}).get("tool_call_id") or "")
             mcp_tool_names = set(get_tool_status()["mcp_tools"])
             log_event(
                 "tool_response",
@@ -238,7 +256,8 @@ async def stream_agent(
             yield {
                 "type": "tool_end",
                 "tool": tool_name,
-                "output": str(output)[:500],
+                "call_id": call_id,
+                "output": str(output),
             }
             if tool_name == "search_precice_docs":
                 for match in re.finditer(r'\[Source: (https?://[^\]]+)\]', str(output)):
