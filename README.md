@@ -198,6 +198,7 @@ precice-ai --provider openrouter --api-key sk-or-... --model openai/gpt-4o-mini
 | `PRECICE_AI_PORT` | Bind port | `7860` |
 | `PRECICE_AI_MCP_SERVER` | Path to the sibling MCP server's `server.py` | `../precice-ai/server.py` |
 | `PRECICE_AI_MCP_PYTHON` | Python interpreter used to launch the MCP server subprocess | this app's own interpreter |
+| `PRECICE_AI_MAX_TOKENS` | Max tokens per assistant reply | `1024` |
 | `PRECICE_AI_LOG_FILE` | Activity log path | `./logs/agent.jsonl` |
 | `PRECICE_AI_ALLOW_LOCAL_SEARCH_FALLBACK` | Allow the (currently disconnected-from-KB) local `search_precice_docs` fallback when MCP is unreachable | `false` |
 
@@ -224,6 +225,19 @@ precice-ai --provider openrouter --api-key sk-or-... --model openai/gpt-4o-mini
   Python (see [Prerequisites](#prerequisites-all-platforms)). Install the platform package
   (`python3-tk` on Debian/Ubuntu, etc.) and retry — no restart needed. Or just skip the
   button and paste the absolute path into the working-directory text field instead.
+- **`402` error mentioning `max_tokens`/"can only afford N"** — the provider's reply-length
+  cap. Lower `PRECICE_AI_MAX_TOKENS` in `.env` below what the error says you can afford
+  (e.g. `512`) and restart, or add credits (the error includes a direct link).
+- **`402` error mentioning `Prompt tokens limit exceeded: X > Y`, even for a one-word
+  message like "hi"** — this is a different limit: the *input* side. The agent binds all
+  available tools (local + everything from the sibling MCP server, ~30+ combined) to every
+  LLM call, and their schemas alone run several thousand tokens regardless of what you
+  type — a paid model like `gpt-4o-mini` with near-zero account credits can exceed a small
+  free quota on tool schemas alone. Fixes: add provider credits (permanent, keeps the
+  strongest model), or switch to a $0 model so the credit-balance cap doesn't apply —
+  `PRECICE_AI_MODEL=openrouter/free` in `.env` is a good default; see the comment above
+  `PRECICE_AI_MODEL` in `.env.example` for how to find current alternatives if that one
+  ever gets retired. Free models are lower quality and can rate-limit under heavy use.
 - **Port already in use** — `precice-ai --port 7861` (or set `PRECICE_AI_PORT`).
 - **`validate_precice_config` / the sibling's `precice_config_check` return an install
   hint instead of a result** — `precice-tools` isn't on `PATH`; install preCICE itself to

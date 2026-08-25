@@ -15,7 +15,7 @@ def build_chat_model() -> ChatOpenAI:
         "openai_api_key": config.LLM_API_KEY,
         "streaming": True,
         "temperature": 0.1,
-        "max_tokens": 1024,
+        "max_tokens": config.MAX_TOKENS,
     }
 
     if config.LLM_BASE_URL:

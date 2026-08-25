@@ -44,6 +44,7 @@ CHROMA_COLLECTION: str = "precice_docs"
 INGEST_INTERVAL_HOURS: int = 1
 MAX_RETRIEVAL_CHUNKS: int = 6
 MAX_SESSION_MESSAGES: int = 20
+MAX_TOKENS: int = int(os.environ.get("PRECICE_AI_MAX_TOKENS", "1024"))
 
 
 def llm_is_configured() -> bool:
