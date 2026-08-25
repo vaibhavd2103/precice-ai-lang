@@ -20,6 +20,217 @@ template for wiring the same tools into either a LangGraph agent or an MCP serve
 
 ---
 
+## Quick Start — install and run
+
+### Overview
+
+This project is made of **two repos that must be checked out side by side**:
+
+| Repo | Role |
+|---|---|
+| [`precice-ai-lang`](https://github.com/vaibhavd2103/precice-ai-lang) (this repo) | Browser chat UI + LangGraph agent |
+| [`precice-ai`](https://github.com/vaibhavd2103/precice-ai) | The preCICE **MCP server** — preCICE knowledge base, project inspection tools, `precice-cli` wrappers |
+
+`precice-ai-lang` spawns `precice-ai`'s server as a subprocess (`python -m precice_ai.server`
+over MCP stdio) and calls its tools for everything preCICE-related — the knowledge base
+search, project structure inspection, config summarizing, log analysis, etc. By default it
+looks for the sibling repo at `../precice-ai` relative to this folder, i.e.:
+
+```text
+some-parent-folder/
+  precice-ai-lang/   ← this repo
+  precice-ai/        ← the MCP server, cloned next to it
+```
+
+If you keep the sibling checkout somewhere else, set `PRECICE_AI_MCP_SERVER` to its
+`server.py` path (see [Environment variables](#environment-variables) below) — you don't
+have to use the default sibling layout.
+
+You need an API key from an OpenAI-tool-calling-compatible provider. **OpenRouter** is the
+default (`https://openrouter.ai`) and has free tool-calling models; any OpenAI-compatible
+base URL works too.
+
+### Prerequisites (all platforms)
+
+- Python 3.10+ and `git`
+- `tkinter` available to that Python, for the browser's **native folder-picker button**
+  (`GET /api/pick-directory`) — the working directory can always be typed/pasted into the
+  text field instead, so this is optional convenience, not a hard requirement. `tkinter`
+  ships with the Python standard library but its `_tkinter` extension needs the system's
+  Tcl/Tk libraries, so it's a system package, not something `pip install -e .` can pull in
+  (there is no such thing as a `tkinter` PyPI package — don't add it to
+  `pyproject.toml`'s `dependencies`, it will fail to resolve):
+  - **Debian/Ubuntu**: `sudo apt install python3-tk`
+  - **Fedora/RHEL**: `sudo dnf install python3-tkinter`
+  - **Arch**: `sudo pacman -S tk`
+  - **macOS (Homebrew Python)**: `brew install python-tk` (matching your `brew info python`
+    version); the python.org installer bundles Tcl/Tk already
+  - **Windows**: bundled by the official python.org installer by default (make sure "tcl/tk
+    and IDLE" is checked); the Microsoft Store build of Python omits it — reinstall from
+    [python.org](https://python.org) if the picker fails
+  - No venv recreation needed after installing — it's part of the base interpreter, and
+    the picker imports it lazily per click, so just retry after installing.
+- Optionally, `precice-tools` on `PATH` if you want the `validate_precice_config` tool and
+  the sibling's `precice_config_check`/`precice_init`/profiling tools to work — that comes
+  from installing preCICE itself ([precice.org](https://precice.org)), not from either of
+  these repos. Both repos degrade gracefully (return a helpful message instead of crashing)
+  when `precice-tools`/`precice-cli` isn't installed.
+
+### 1. Clone both repos next to each other
+
+**Linux / macOS**
+
+```bash
+mkdir -p ~/precice && cd ~/precice
+git clone https://github.com/vaibhavd2103/precice-ai-lang.git
+git clone https://github.com/vaibhavd2103/precice-ai.git
+```
+
+**Windows (PowerShell)**
+
+```powershell
+mkdir $HOME\precice; cd $HOME\precice
+git clone https://github.com/vaibhavd2103/precice-ai-lang.git
+git clone https://github.com/vaibhavd2103/precice-ai.git
+```
+
+Same commands work inside WSL (Ubuntu on Windows) — use the Linux/macOS block there instead.
+
+### 2. Set up the MCP server (`precice-ai`)
+
+This builds the preCICE knowledge base and gives the agent project/config/log tools.
+
+```bash
+cd precice-ai
+python3 -m venv .venv          # Windows: python -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\Activate.ps1
+pip install -e .
+cp .env.example .env           # Windows: copy .env.example .env
+```
+
+Add your embedding key to `precice-ai/.env` (used to build/query the knowledge base):
+
+```text
+OPENROUTER_API_KEY=sk-or-...
+```
+
+Build the knowledge base once so `precice-ai-lang` has something to query on first use
+(it also auto-builds on demand, but pre-building avoids a delay on your first preCICE
+question):
+
+```bash
+precice-ai kb ingest
+precice-ai kb status
+```
+
+Full details (all supported MCP clients, Blablador as an alternative embedding provider,
+`precice-cli`-backed tools, etc.) are in that repo's own `README.md`.
+
+### 3. Set up the chat UI (`precice-ai-lang`, this repo)
+
+```bash
+cd ../precice-ai-lang
+python3 -m venv .venv          # Windows: python -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\Activate.ps1
+pip install -e .
+cp .env.example .env           # Windows: copy .env.example .env
+```
+
+Edit `.env` and set your LLM key (this is the *chat* model key — it can be the same
+OpenRouter key you used above, or a different provider entirely):
+
+```text
+PRECICE_AI_PROVIDER=openrouter
+PRECICE_AI_API_KEY=sk-or-...
+PRECICE_AI_MODEL=openai/gpt-4o-mini
+PRECICE_AI_BASE_URL=https://openrouter.ai/api/v1
+```
+
+> The `pip install -e .` here also installs everything `precice-ai`'s server needs
+> (`fastmcp`, `httpx`, `lxml`, `numpy`, `openai`) so the same virtualenv's Python can run
+> the sibling server as a subprocess — you don't need to activate the other repo's venv to
+> start this one. It also pulls in `chromadb`/`sentence-transformers`/PyTorch (a few GB):
+> those are vestigial from an earlier local-RAG design and aren't imported by any code path
+> today — safe to strip from `pyproject.toml` later if you want a lighter install, but
+> harmless to leave as-is.
+
+### 4. Run it
+
+```bash
+precice-ai            # from inside precice-ai-lang, with its venv active
+```
+
+This opens `http://127.0.0.1:7860` in your browser automatically. On startup it connects
+to the sibling MCP server and prints something like:
+
+```text
+preCICE AI starting at http://127.0.0.1:7860
+[preCICE AI] {"event": "mcp_startup", "connected": true, "tools": [...27 tool names...]}
+INFO:     Application startup complete.
+```
+
+`"connected": true` confirms the MCP handoff worked. If you instead see `mcp_error` with a
+message, see [Troubleshooting](#troubleshooting) below.
+
+In the browser:
+
+1. Click **New session** (or it's created automatically).
+2. Set a **working directory** — an absolute path to your preCICE project folder. Every
+   file read/write/validate call is sandboxed to this folder.
+3. Chat. Ask something like *"what preCICE projects do you see?"* or *"summarize my
+   precice-config.xml"*.
+
+You can also skip `.env` entirely and pass flags directly:
+
+```bash
+precice-ai --provider openrouter --api-key sk-or-... --model openai/gpt-4o-mini
+```
+
+### Environment variables
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PRECICE_AI_PROVIDER` / `LLM_PROVIDER` | LLM provider name | `openrouter` |
+| `PRECICE_AI_API_KEY` / `LLM_API_KEY` / `OPENROUTER_API_KEY` | Chat model API key | *(required)* |
+| `PRECICE_AI_MODEL` / `LLM_MODEL` | Chat model id | `openai/gpt-4o-mini` |
+| `PRECICE_AI_BASE_URL` / `LLM_BASE_URL` | OpenAI-compatible base URL | `https://openrouter.ai/api/v1` when provider is `openrouter` |
+| `PRECICE_AI_HOST` | Bind host | `127.0.0.1` |
+| `PRECICE_AI_PORT` | Bind port | `7860` |
+| `PRECICE_AI_MCP_SERVER` | Path to the sibling MCP server's `server.py` | `../precice-ai/server.py` |
+| `PRECICE_AI_MCP_PYTHON` | Python interpreter used to launch the MCP server subprocess | this app's own interpreter |
+| `PRECICE_AI_LOG_FILE` | Activity log path | `./logs/agent.jsonl` |
+| `PRECICE_AI_ALLOW_LOCAL_SEARCH_FALLBACK` | Allow the (currently disconnected-from-KB) local `search_precice_docs` fallback when MCP is unreachable | `false` |
+
+### Troubleshooting
+
+- **`ERROR: no LLM API key found.`** at startup — `PRECICE_AI_API_KEY` (or `LLM_API_KEY`/
+  `OPENROUTER_API_KEY`) is empty in `.env`/the environment. Note that leaving the
+  `.env.example` placeholder (`your-api-key-here`) in place is non-empty, so the server
+  *will* start — you'll instead see an auth error from the provider once you send a chat
+  message. Set a real key.
+- **`mcp_error` in the startup log / `"mcp_connected": false` from `GET /api/status`** —
+  usually one of:
+  - the sibling repo isn't at `../precice-ai` and `PRECICE_AI_MCP_SERVER` isn't set to
+    wherever it actually is;
+  - the sibling repo's dependencies aren't importable from the interpreter running
+    `precice-ai-lang` — either `pip install -e .` in this repo (which vendors those deps),
+    or set `PRECICE_AI_MCP_PYTHON` to the sibling repo's own `.venv/bin/python`
+    (`.venv\Scripts\python.exe` on Windows).
+- **Chat replies that preCICE knowledge is unavailable** — check
+  `GET /api/status` → `tools.mcp_connected`, and `precice-ai kb status` inside the sibling
+  repo to confirm the knowledge base actually has data.
+- **Clicking the folder-picker button shows an alert like `Directory picker unavailable:
+  No module named 'tkinter'`** — the system Tcl/Tk libraries aren't installed for this
+  Python (see [Prerequisites](#prerequisites-all-platforms)). Install the platform package
+  (`python3-tk` on Debian/Ubuntu, etc.) and retry — no restart needed. Or just skip the
+  button and paste the absolute path into the working-directory text field instead.
+- **Port already in use** — `precice-ai --port 7861` (or set `PRECICE_AI_PORT`).
+- **`validate_precice_config` / the sibling's `precice_config_check` return an install
+  hint instead of a result** — `precice-tools` isn't on `PATH`; install preCICE itself to
+  get it, or ignore if you don't need config validation.
+
+---
+
 ## 1. Why LangGraph (vs. a plain LLM loop)
 
 An MCP server exposes tools over a protocol so *any* MCP-compatible client (Claude
@@ -251,23 +462,12 @@ MCP clients will show the LLM on the other end — no need to write them twice.
 
 ## 8. Running it
 
+See [Quick Start](#quick-start--install-and-run) at the top of this document for full
+Linux/macOS/Windows install steps, pairing this repo with the sibling `precice-ai` MCP
+server, and troubleshooting. Once both repos are installed, day-to-day startup is just:
+
 ```bash
-git clone <your-fork-or-copy>
-cd precice-ai
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
-cp .env.example .env
 precice-ai
-```
-
-Or start it without editing `.env`:
-
-```bash
-precice-ai \
-  --provider openrouter \
-  --api-key sk-or-... \
-  --model openai/gpt-4o-mini \
-  --base-url https://openrouter.ai/api/v1
 ```
 
 After startup, open `http://127.0.0.1:7860`, create a chat session, choose the working
@@ -290,10 +490,6 @@ input/output and each tool call/response is recorded; MCP events include
 `"source": "mcp"` and the MCP tool name. Set `PRECICE_AI_LOG_FILE` to choose another
 path. The same events are printed to the server terminal in real time. Logging failures
 never interrupt a chat stream.
-
-The preCICE MCP server is loaded from the sibling `precice-ai` checkout. Its `fastmcp`
-dependency is included in this project; after installing dependencies, restart the app
-and check `GET /api/status` for `tools.mcp_connected` and the MCP tool names.
 
 ## 9. File map
 
