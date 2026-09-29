@@ -10,6 +10,48 @@ exactly. When in doubt, re-read the relevant section.
 
 ---
 
+## 0. Current architecture — read first (supersedes parts of §2, §5–§9, §11, §13)
+
+The sections below are the **original** build spec. The project has since moved preCICE
+knowledge out of this repo and into the sibling **`precice-ai` MCP server**
+(`../precice-ai`). Where this section conflicts with the rest of the file, this section
+wins. README.md has the full description.
+
+- **preCICE knowledge comes from the MCP server, not a local ChromaDB index.**
+  `tools.py::initialize_tools()` launches the sibling as a stdio subprocess
+  (`python -m precice_ai.server`, cwd = sibling repo) via `langchain_mcp_adapters`
+  `MultiServerMCPClient` and binds its 27 tools (`kb_*`, project/config/log tools,
+  `precice-cli` wrappers) alongside the local tools. Path/interpreter overrides:
+  `PRECICE_AI_MCP_SERVER`, `PRECICE_AI_MCP_PYTHON`.
+- **Knowledge base = the MCP server's local cache** at `~/.precice-ai/kb_store`
+  (`PRECICE_KB_STORE_DIR`): per-category `kb-embeddings-<category>.npz` plus a lexical
+  `knowledge_base.json`. It is synced from the `kb-latest` GitHub release (at most every
+  96 h). This repo never scrapes or embeds anything.
+- **`ingest.py` (§6) no longer scrapes.** `run_ingestion()` only reads cache status via
+  `mcp_kb.local_kb_status()` for `/api/status`. It still runs at startup, hourly, and on
+  `/api/reingest`. `vectorstore.py` (§7) is vestigial and not imported anywhere.
+- **`search_precice_docs` (§8 Tool 1)** is now a BM25-like search over the cached
+  `knowledge_base.json` (`mcp_kb.query_local_kb`). It is bound only when MCP is **not**
+  connected **and** `PRECICE_AI_ALLOW_LOCAL_SEARCH_FALLBACK=true`.
+- **`graph.py` (§9)** adds a deterministic MCP prefetch in `call_llm`: for preCICE-looking
+  questions it calls `kb_precice_status` → `kb_ingest_precice_data` (if stale) →
+  `kb_query_precice` and injects the result into the system prompt. Tools come from
+  `get_all_tools()` (local + MCP). SSE `tool_start`/`tool_end` carry a `call_id`, and
+  server errors are sent as `{"type": "error"}`.
+- **LLM config (§3, §5)** is provider-flexible through `llm.py`:
+  `PRECICE_AI_PROVIDER/API_KEY/MODEL/BASE_URL` (with `LLM_*` and `OPENROUTER_API_KEY`
+  fallbacks), plus `PRECICE_AI_MAX_TOKENS`. `cli.py` accepts `--provider --api-key
+  --model --base-url --env-file`.
+- **Extra endpoints (§11):** `GET /api/config`, `GET /api/tools`,
+  `GET /api/pick-directory`. `/api/chat` refuses to run until a working directory is set.
+- **Logging:** `logger.py` writes JSONL activity to `logs/agent.jsonl`.
+- **Security (§16):** the `working_dir` sandbox covers the **local** tools. MCP project
+  tools are sandboxed to `PRECICE_PROJECTS_DIR` instead, and `run_command_in_project`
+  runs only allow-listed commands defined in the sibling repo.
+- New preCICE-knowledge or `precice-cli` features belong in the MCP server repo, not here.
+
+---
+
 ## 1. What you are building
 
 A Python package called `precice-ai` that:

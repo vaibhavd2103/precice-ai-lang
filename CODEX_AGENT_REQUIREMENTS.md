@@ -33,19 +33,25 @@ This repository already contains a working first version of a local preCICE assi
 
 - Python package: `precice-ai`
 - Agent runtime: `langgraph`
-- LLM client: `langchain-openai`
+- LLM client: `langchain-openai` (provider-flexible factory in `precice_ai/llm.py`)
 - Web server: `fastapi`
-- Vector store: `chromadb`
-- Embeddings: `sentence-transformers`
+- preCICE knowledge: the sibling **`precice-ai` MCP server** (`../precice-ai`), launched
+  over stdio through `langchain-mcp-adapters`. Its local KB cache lives in
+  `~/.precice-ai/kb_store` (category-wise vector `.npz` files + lexical
+  `knowledge_base.json`, synced from a GitHub release)
 - Frontend: single static page in `static/index.html`
+- Legacy/unused: `chromadb`, `sentence-transformers` (`vectorstore.py`)
 
 ### Existing entry points
 
 - CLI entry: `precice-ai`
 - Web app server: `precice_ai/server.py`
 - Agent graph: `precice_ai/graph.py`
-- Tools: `precice_ai/tools.py`
-- Ingestion pipeline: `precice_ai/ingest.py`
+- Tools + MCP client startup: `precice_ai/tools.py`
+- MCP KB cache reader (status + lexical fallback): `precice_ai/mcp_kb.py`
+- KB status for `/api/status`: `precice_ai/ingest.py`
+- LLM factory: `precice_ai/llm.py`
+- Activity logging: `precice_ai/logger.py`
 - Session state: `precice_ai/conversation.py`
 - Settings: `precice_ai/config.py`
 
@@ -57,7 +63,9 @@ The app already supports:
 - session creation,
 - working-directory selection,
 - local file reads and writes inside the chosen directory,
-- preCICE docs/forum search through a Chroma-backed knowledge base,
+- preCICE knowledge answers from the MCP server's KB tools (`kb_precice_status`,
+  `kb_query_precice`, …), with a deterministic KB prefetch for preCICE questions,
+- MCP project/config/log inspection and `precice-cli` wrappers,
 - live forum search,
 - `precice-config.xml` validation through `precice-tools check`,
 - streaming responses over SSE.
@@ -86,7 +94,7 @@ Build a provider-flexible preCICE assistant that can:
 1. accept LLM credentials/configuration from the user,
 2. initialize a supported chat model,
 3. use tools to inspect and modify project files,
-4. use RAG over preCICE documentation and forum content,
+4. use the preCICE MCP server's knowledge base for documentation and forum content,
 5. answer questions about both:
    - preCICE in general,
    - the user's selected project specifically.
@@ -133,7 +141,8 @@ Non-negotiable rule:
 
 The agent should combine:
 
-- general preCICE knowledge from ingested docs/forum sources,
+- general preCICE knowledge from the MCP server's local KB cache (docs, tutorials,
+  forum, GitHub issues/PRs),
 - project-specific knowledge from local files selected by the user.
 
 It should be able to answer questions such as:
@@ -251,7 +260,9 @@ The intended solution is successful when:
 - `precice_ai/graph.py`
 - `precice_ai/tools.py`
 - `precice_ai/server.py`
+- `precice_ai/mcp_kb.py`
 - `precice_ai/ingest.py`
+- the sibling `precice-ai` repo (MCP server, `precice_ai/tools/`)
 
 ## Summary
 
