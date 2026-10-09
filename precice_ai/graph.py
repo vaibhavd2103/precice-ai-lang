@@ -3,12 +3,13 @@ import re
 from typing import Annotated, AsyncIterator, List
 import operator
 
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from typing_extensions import TypedDict
 
-from precice_ai import config
+from precice_ai import config as settings
 from precice_ai.llm import build_chat_model
 from precice_ai.logger import log_event
 from precice_ai.tools import get_all_tools, get_mcp_tool, get_tool_status
@@ -49,66 +50,65 @@ def _is_precice_question(text: object) -> bool:
     return any(term in lowered for term in terms)
 
 
-def _mcp_call(tool: object, name: str, payload: dict, session_id: str) -> str:
-    """Invoke an MCP tool for deterministic prefetching and log it."""
-    log_event("tool_call", session_id=session_id, source="mcp", tool=name, input=payload)
+async def _mcp_call(tool: object, payload: dict, config: RunnableConfig | None) -> str:
+    """Invoke an async MCP tool for deterministic prefetching.
+
+    MCP tools are async-only, so they must be awaited via ``ainvoke``. Passing the
+    run config keeps the call visible as a tool card in the event stream.
+    """
     try:
-        result = tool.invoke(payload)
-        output = getattr(result, "content", result)
-        output = str(output)
+        result = await tool.ainvoke(payload, config)
+        return _content_to_text(getattr(result, "content", result))
     except Exception as exc:
-        output = f"MCP tool error: {exc}"
-    log_event("tool_response", session_id=session_id, source="mcp", tool=name, output=output)
-    return output
+        return f"MCP tool error: {exc}"
 
 
-def _prefetch_precice_context(question: str, session_id: str) -> str | None:
-    """Fetch MCP KB context before the LLM gets a preCICE question."""
+def _parse_json(text: str) -> dict:
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except (TypeError, json.JSONDecodeError):
+        return {}
+
+
+_kb_ingest_attempted = False
+
+
+async def _prefetch_precice_context(question: str, config: RunnableConfig | None) -> str | None:
+    """Fetch MCP KB context once per user turn, before the LLM answers a preCICE question."""
+    global _kb_ingest_attempted
     if not _is_precice_question(question) or not get_tool_status()["mcp_connected"]:
         return None
 
     status_tool = get_mcp_tool("kb_precice_status")
-    if status_tool is None:
-        return None
+    if status_tool is not None and not _kb_ingest_attempted:
+        status = _parse_json(await _mcp_call(status_tool, {}, config))
+        categories = (status.get("vector") or {}).get("categories")
+        # Only ingest when the KB is genuinely empty; ingest is slow, so try once per process.
+        if isinstance(categories, dict) and not categories:
+            ingest_tool = get_mcp_tool("kb_ingest_precice_data")
+            if ingest_tool is not None:
+                _kb_ingest_attempted = True
+                await _mcp_call(ingest_tool, {}, config)
 
-    status_text = _mcp_call(status_tool, "kb_precice_status", {}, session_id)
-    try:
-        status = json.loads(status_text)
-        vector = status.get("vector", {})
-        vector_ready = vector.get("status") == "ok"
-        categories = vector.get("categories", {})
-        vector_ready = vector_ready and any(
-            details.get("status") == "ok" for details in categories.values()
-            if isinstance(details, dict)
-        )
-        if vector_ready:
-            vector_ready = all(
-                details.get("is_fresh", True)
-                for details in categories.values()
-                if isinstance(details, dict) and details.get("status") == "ok"
-            )
-    except (TypeError, json.JSONDecodeError):
-        vector_ready = False
-
-    if not vector_ready:
-        ingest_tool = get_mcp_tool("kb_ingest_precice_data")
-        if ingest_tool is not None:
-            _mcp_call(ingest_tool, "kb_ingest_precice_data", {}, session_id)
-
-    query_tool = get_mcp_tool("kb_query_precice")
-    if query_tool is None:
-        query_tool = get_mcp_tool("kb_query_precice_live")
+    query_tool = get_mcp_tool("kb_query_precice") or get_mcp_tool("kb_query_precice_live")
     if query_tool is None:
         return "The preCICE MCP server is connected, but no query tool is available."
 
-    query_name = query_tool.name
-    result = _mcp_call(query_tool, query_name, {"question": question, "top_k": 5}, session_id)
-    return f"PreCICE MCP knowledge retrieved with {query_name}:\n{result}"
+    result = await _mcp_call(query_tool, {"question": question, "top_k": 5}, config)
+    parsed = _parse_json(result)
+    if result.startswith("MCP tool error") or parsed.get("status") in {"error", "empty"}:
+        return (
+            f"The preCICE MCP knowledge base query ({query_tool.name}) returned no usable "
+            f"results: {result[:600]}\nTell the user the knowledge base is unavailable or "
+            "needs rebuilding, and do not present memory-based answers as KB-sourced."
+        )
+    return f"PreCICE MCP knowledge retrieved with {query_tool.name}:\n{result}"
 
 
 def _get_llm_with_tools():
     global _llm, _llm_with_tools, _llm_signature
-    signature = (config.LLM_PROVIDER, config.MODEL, config.LLM_BASE_URL, bool(config.LLM_API_KEY))
+    signature = (settings.LLM_PROVIDER, settings.MODEL, settings.LLM_BASE_URL, bool(settings.LLM_API_KEY))
     if _llm_with_tools is None or _llm_signature != signature:
         _llm = build_chat_model()
         _llm_with_tools = _llm.bind_tools(get_all_tools())
@@ -116,7 +116,7 @@ def _get_llm_with_tools():
     return _llm_with_tools
 
 
-def call_llm(state: AgentState) -> dict:
+async def call_llm(state: AgentState, config: RunnableConfig) -> dict:
     tool_status = get_tool_status()
     log_event(
         "agent_input",
@@ -125,9 +125,12 @@ def call_llm(state: AgentState) -> dict:
         message_count=len(state["messages"]),
         input=state["messages"][-1].content if state["messages"] else "",
     )
-    prefetched_context = _prefetch_precice_context(
-        _content_to_text(state["messages"][-1].content) if state["messages"] else "",
-        state["session_id"],
+    # Prefetch only on the first loop iteration of a turn (last message is the user's);
+    # later iterations follow tool results and must not re-query with tool output.
+    last = state["messages"][-1] if state["messages"] else None
+    prefetched_context = (
+        await _prefetch_precice_context(_content_to_text(last.content), config)
+        if isinstance(last, HumanMessage) else None
     )
     context_message = (
         f"\n\nDeterministic MCP context for this question:\n{prefetched_context}"
@@ -157,15 +160,15 @@ When writing or modifying files, confirm with the user what you are about to do 
 MCP connection at startup: {tool_status['mcp_connected']}. MCP startup error: {tool_status['mcp_error'] or 'none'}.
 If MCP is unavailable, say so clearly and do not claim that you searched the preCICE KB.
 """ + context_message)
-    messages = [system] + state["messages"][-config.MAX_SESSION_MESSAGES:]
+    messages = [system] + state["messages"][-settings.MAX_SESSION_MESSAGES:]
     llm = _get_llm_with_tools()
     log_event(
         "llm_call",
         session_id=state["session_id"],
-        model=config.MODEL,
+        model=settings.MODEL,
         message_count=len(messages),
     )
-    response = llm.invoke(messages)
+    response = await llm.ainvoke(messages, config)
     log_event(
         "agent_output",
         session_id=state["session_id"],
@@ -175,6 +178,44 @@ If MCP is unavailable, say so clearly and do not claim that you searched the pre
     return {"messages": [response]}
 
 
+def _tool_arg_names(tool: object) -> set[str]:
+    schema = getattr(tool, "args_schema", None)
+    if isinstance(schema, dict):
+        return set(schema.get("properties", {}))
+    if schema is not None and hasattr(schema, "model_json_schema"):
+        return set(schema.model_json_schema().get("properties", {}))
+    return set()
+
+
+def make_tool_runner(tools: list):
+    """Run tool calls with session-scoped arguments forced by the server.
+
+    The model fills tool arguments itself, so ``working_dir``/``session_id``/``cwd``
+    are overwritten with the session's values; the model cannot widen file access.
+    """
+    tool_node = ToolNode(tools)
+    arg_names = {t.name: _tool_arg_names(t) for t in tools}
+
+    async def run_tools(state: AgentState, config: RunnableConfig) -> dict:
+        last = state["messages"][-1]
+        pinned = {
+            "working_dir": state["working_dir"],
+            "cwd": state["working_dir"],
+            "session_id": state["session_id"],
+        }
+        calls = []
+        for call in last.tool_calls:
+            args = dict(call["args"])
+            for key, value in pinned.items():
+                if key in arg_names.get(call["name"], ()):
+                    args[key] = value
+            calls.append({**call, "args": args})
+        patched = last.model_copy(update={"tool_calls": calls})
+        return await tool_node.ainvoke({**state, "messages": [patched]}, config)
+
+    return run_tools
+
+
 def build_graph():
     tools = get_all_tools()
     tool_status = get_tool_status()
@@ -182,12 +223,11 @@ def build_graph():
         print("Using sibling preCICE MCP server for preCICE knowledge questions.")
     else:
         print("preCICE MCP unavailable; using local documentation search fallback.")
-    tool_node = ToolNode(tools)
     print(f"Graph tools: {[t.name for t in tools]}")
 
     graph = StateGraph(AgentState)
     graph.add_node("agent", call_llm)
-    graph.add_node("tools", tool_node)
+    graph.add_node("tools", make_tool_runner(tools))
     graph.set_entry_point("agent")
     graph.add_conditional_edges("agent", tools_condition)
     graph.add_edge("tools", "agent")
@@ -215,7 +255,7 @@ async def stream_agent(
     }
     sources_seen: list[dict] = []
 
-    async for event in app.astream_events(state, version="v2"):
+    async for event in app.astream_events(state, version="v2", config={"recursion_limit": 40}):
         kind = event["event"]
 
         if kind == "on_chat_model_stream":
@@ -241,8 +281,11 @@ async def stream_agent(
                 "input": event["data"].get("input", {}),
             }
 
-        elif kind == "on_tool_end":
-            output = event["data"].get("output", "")
+        elif kind in ("on_tool_end", "on_tool_error"):
+            output = event["data"].get("output", event["data"].get("error", ""))
+            output = getattr(output, "content", output)
+            if kind == "on_tool_error":
+                output = f"Error: {output}"
             tool_name = event["name"]
             call_id = str(event.get("run_id") or event.get("data", {}).get("tool_call_id") or "")
             mcp_tool_names = set(get_tool_status()["mcp_tools"])
@@ -251,16 +294,16 @@ async def stream_agent(
                 session_id=session_id,
                 source="mcp" if tool_name in mcp_tool_names else "local",
                 tool=tool_name,
-                output=str(output),
+                output=_content_to_text(output),
             )
             yield {
                 "type": "tool_end",
                 "tool": tool_name,
                 "call_id": call_id,
-                "output": str(output),
+                "output": _content_to_text(output),
             }
             if tool_name == "search_precice_docs":
-                for match in re.finditer(r'\[Source: (https?://[^\]]+)\]', str(output)):
+                for match in re.finditer(r'\[Source: (https?://[^\]]+)\]', _content_to_text(output)):
                     url = match.group(1)
                     if url not in [s["url"] for s in sources_seen]:
                         sources_seen.append({"url": url, "type": "docs"})
